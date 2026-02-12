@@ -30,4 +30,15 @@ const RideSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+RideSchema.index(
+  { driver: 1, status: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: "in-transit",
+      driver: { $type: "objectId" },
+    },
+  },
+);
+
 module.exports = mongoose.model("Ride", RideSchema);

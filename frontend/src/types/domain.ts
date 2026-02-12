@@ -17,6 +17,8 @@ export type RideStatus =
   | "completed"
   | "cancelled";
 
+export type ComplaintStatus = "submitted" | "in_review" | "resolved" | "rejected";
+
 export interface CurrentRide {
   id: string;
   status: RideStatus;
@@ -73,9 +75,14 @@ export interface DriverRide {
 
 export interface Complaint {
   _id: string;
-  description: string;
-  status: "waiting" | "assigned" | "completed";
+  complaintText: string;
+  description?: string;
+  status: ComplaintStatus;
   createdAt: string;
+  updatedAt: string;
+  tripId?: string | null;
+  rideId?: string | null;
+  adminResponse?: string;
   adminRemark?: string;
   student?: {
     _id: string;
@@ -109,7 +116,8 @@ export interface Schedule {
 
 export interface ChatMessage {
   id: string;
-  rideId: string;
+  roomType: "queue" | "trip";
+  roomId: string;
   content: string;
   sender: {
     id: string;
@@ -117,4 +125,5 @@ export interface ChatMessage {
     role: UserRole;
   };
   createdAt: string;
+  rideId?: string;
 }

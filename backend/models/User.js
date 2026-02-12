@@ -33,6 +33,20 @@ const UserSchema = new mongoose.Schema(
       enum: ["active", "inactive"],
       default: "active",
     },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    deactivatedAt: {
+      type: Date,
+      default: null,
+    },
+    deactivatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
     vehicleNumber: {
       type: String,
       trim: true,

@@ -18,6 +18,14 @@ const authMiddleware = async (req, _res, next) => {
       return next(new ApiError(401, "Invalid token: user not found"));
     }
 
+    if (user.isActive === false) {
+      return next(new ApiError(403, "Account removed by admin"));
+    }
+
+    if (user.status !== "active") {
+      return next(new ApiError(403, "User is inactive. Contact admin."));
+    }
+
     req.user = user;
     return next();
   } catch (error) {

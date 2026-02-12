@@ -85,19 +85,25 @@ const DriverDashboard = () => {
       refreshRideData();
     };
 
-    const onRideFull = () => {
-      toast.success("A ride group is full and ready");
-      refreshRideData();
+    const handleQueueCount = (payload: { totalWaiting?: number } | undefined) => {
+      if (typeof payload?.totalWaiting !== "number") {
+        return;
+      }
+
+      setDriverData((prev) => ({
+        ...prev,
+        waitingCount: payload.totalWaiting ?? prev.waitingCount,
+      }));
     };
 
     socket.on("ride:updated", refresh);
     socket.on("queue:updated", refresh);
-    socket.on("ride:full", onRideFull);
+    socket.on("queue:count", handleQueueCount);
 
     return () => {
       socket.off("ride:updated", refresh);
       socket.off("queue:updated", refresh);
-      socket.off("ride:full", onRideFull);
+      socket.off("queue:count", handleQueueCount);
     };
   }, [refreshRideData]);
 
@@ -175,7 +181,7 @@ const DriverDashboard = () => {
             ? ride.status === "in-transit"
               ? "Trip in progress"
               : "Ride assigned"
-            : `Waiting for group completion (${driverData.waitingCount} in queue)`}
+            : `Waiting for students (${driverData.waitingCount} in queue)`}
         </p>
       </motion.div>
 
@@ -226,20 +232,22 @@ const DriverDashboard = () => {
                     </div>
                   </div>
 
-                  {student.status === "assigned" && (
+                  {(["waiting", "assigned"] as const).includes(student.status as "waiting" | "assigned") && (
                     <div className="flex gap-1.5">
-                      <button
-                        onClick={() => handleArrive(student.queueEntryId)}
-                        className="p-2 rounded-lg bg-success/10 text-success hover:bg-success/20 transition-colors"
-                        title="Arrived"
-                        disabled={Boolean(isActionLoading)}
-                      >
-                        {isActionLoading === student.queueEntryId ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <CheckCircle className="w-4 h-4" />
-                        )}
-                      </button>
+                      {student.status === "assigned" ? (
+                        <button
+                          onClick={() => handleArrive(student.queueEntryId)}
+                          className="p-2 rounded-lg bg-success/10 text-success hover:bg-success/20 transition-colors"
+                          title="Arrived"
+                          disabled={Boolean(isActionLoading)}
+                        >
+                          {isActionLoading === student.queueEntryId ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <CheckCircle className="w-4 h-4" />
+                          )}
+                        </button>
+                      ) : null}
                       <button
                         onClick={() => handleCancel(student.queueEntryId)}
                         className="p-2 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"

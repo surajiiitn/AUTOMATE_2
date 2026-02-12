@@ -13,12 +13,13 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { CurrentRide, RideHistoryItem } from "@/types/domain";
+import { Complaint, CurrentRide, RideHistoryItem } from "@/types/domain";
 import {
   getStudentCurrentRideRequest,
   getStudentHistoryRequest,
+  leaveQueueRequest,
 } from "@/services/rideService";
-import { submitComplaintRequest } from "@/services/complaintService";
+import { getMyComplaintsRequest, submitComplaintRequest } from "@/services/complaintService";
 import { getSocket } from "@/lib/socket";
 import { extractErrorMessage } from "@/lib/api";
 import { toast } from "sonner";
@@ -33,15 +34,25 @@ const StudentDashboard = () => {
   const [showComplaint, setShowComplaint] = useState(false);
   const [complaint, setComplaint] = useState("");
   const [isSubmittingComplaint, setIsSubmittingComplaint] = useState(false);
+  const [isLeavingQueue, setIsLeavingQueue] = useState(false);
 
   const [currentRide, setCurrentRide] = useState<CurrentRide | null>(null);
   const [history, setHistory] = useState<RideHistoryItem[]>([]);
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [queueCount, setQueueCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadCurrentRide = useCallback(async () => {
     const ride = await getStudentCurrentRideRequest();
     setCurrentRide(ride);
+    setQueueCount((prev) => {
+      if (!ride || ride.status !== "waiting") {
+        return null;
+      }
+
+      return typeof prev === "number" ? prev : ride.queuePosition || 1;
+    });
   }, []);
 
   const loadDashboard = useCallback(async () => {
@@ -49,12 +60,15 @@ const StudentDashboard = () => {
     setError(null);
 
     try {
-      const [ride, rideHistory] = await Promise.all([
+      const [ride, rideHistory, complaintItems] = await Promise.all([
         getStudentCurrentRideRequest(),
         getStudentHistoryRequest(),
+        getMyComplaintsRequest(),
       ]);
       setCurrentRide(ride);
       setHistory(rideHistory.slice(0, 3));
+      setComplaints(complaintItems.slice(0, 4));
+      setQueueCount(ride?.status === "waiting" ? ride.queuePosition || 1 : null);
     } catch (loadError) {
       setError(extractErrorMessage(loadError, "Unable to load dashboard"));
     } finally {
@@ -78,12 +92,32 @@ const StudentDashboard = () => {
       });
     };
 
+    const handleQueueCount = (payload: { totalWaiting?: number } | undefined) => {
+      if (typeof payload?.totalWaiting !== "number") {
+        return;
+      }
+
+      setQueueCount(payload.totalWaiting);
+    };
+
+    const handleComplaintUpdate = () => {
+      getMyComplaintsRequest()
+        .then((complaintItems) => setComplaints(complaintItems.slice(0, 4)))
+        .catch(() => {
+          // Ignore transient complaint refresh errors.
+        });
+    };
+
     socket.on("queue:updated", handleQueueUpdate);
+    socket.on("queue:count", handleQueueCount);
     socket.on("ride:updated", handleQueueUpdate);
+    socket.on("complaint:statusUpdated", handleComplaintUpdate);
 
     return () => {
       socket.off("queue:updated", handleQueueUpdate);
+      socket.off("queue:count", handleQueueCount);
       socket.off("ride:updated", handleQueueUpdate);
+      socket.off("complaint:statusUpdated", handleComplaintUpdate);
     };
   }, [loadCurrentRide]);
 
@@ -96,6 +130,8 @@ const StudentDashboard = () => {
     setIsSubmittingComplaint(true);
     try {
       await submitComplaintRequest(trimmed, currentRide?.rideId || undefined);
+      const complaintItems = await getMyComplaintsRequest();
+      setComplaints(complaintItems.slice(0, 4));
       toast.success("Complaint submitted");
       setShowComplaint(false);
       setComplaint("");
@@ -103,6 +139,27 @@ const StudentDashboard = () => {
       toast.error(extractErrorMessage(submitError, "Unable to submit complaint"));
     } finally {
       setIsSubmittingComplaint(false);
+    }
+  };
+
+  const handleLeaveQueue = async () => {
+    if (!currentRide || currentRide.status !== "waiting") {
+      return;
+    }
+
+    if (!window.confirm("Leave the queue?")) {
+      return;
+    }
+
+    setIsLeavingQueue(true);
+    try {
+      await leaveQueueRequest();
+      toast.success("You have left the queue");
+      await loadDashboard();
+    } catch (leaveError) {
+      toast.error(extractErrorMessage(leaveError, "Unable to leave queue"));
+    } finally {
+      setIsLeavingQueue(false);
     }
   };
 
@@ -174,6 +231,9 @@ const StudentDashboard = () => {
                 <div>
                   <div className="text-[11px] text-muted-foreground font-medium">Queue</div>
                   <div className="text-sm font-bold">#{currentRide.queuePosition || 1}</div>
+                  {queueCount !== null ? (
+                    <div className="text-[10px] text-muted-foreground">{queueCount} waiting</div>
+                  ) : null}
                 </div>
               </div>
               <div className="flex items-center gap-2.5 p-3 rounded-xl bg-muted/50">
@@ -200,6 +260,15 @@ const StudentDashboard = () => {
                 }}
               />
             </div>
+            {currentRide.status === "waiting" ? (
+              <button
+                onClick={handleLeaveQueue}
+                disabled={isLeavingQueue}
+                className="w-full h-10 rounded-xl border border-destructive/30 bg-destructive/5 text-destructive text-sm font-semibold hover:bg-destructive/10 disabled:opacity-50"
+              >
+                {isLeavingQueue ? "Leaving..." : "Leave Queue"}
+              </button>
+            ) : null}
           </>
         )}
       </motion.div>
@@ -239,6 +308,42 @@ const StudentDashboard = () => {
             )}
           </motion.div>
         ))}
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display font-semibold text-base">Complaints</h2>
+        </div>
+
+        {complaints.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No complaints submitted yet.</p>
+        ) : (
+          complaints.map((item, i) => (
+            <motion.div
+              key={item._id}
+              {...fadeUp}
+              transition={{ delay: 0.25 + i * 0.05 }}
+              className="card-interactive p-4 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <StatusBadge status={item.status} />
+                <span className="text-[11px] text-muted-foreground">
+                  {new Date(item.createdAt).toLocaleString()}
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {item.complaintText || item.description}
+              </p>
+              {item.adminResponse ? (
+                <p className="text-xs text-foreground/80 bg-muted/50 rounded-lg px-2.5 py-2">
+                  Admin: {item.adminResponse}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Awaiting admin response.</p>
+              )}
+            </motion.div>
+          ))
+        )}
       </div>
 
       {showComplaint && (

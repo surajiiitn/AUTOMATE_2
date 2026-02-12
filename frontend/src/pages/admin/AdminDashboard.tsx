@@ -10,6 +10,7 @@ import {
   TrendingUp,
   CalendarDays,
   Loader2,
+  Trash2,
 } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { useLocation } from "react-router-dom";
@@ -24,8 +25,8 @@ import {
   updateComplaintStatusRequest,
 } from "@/services/complaintService";
 import { createScheduleRequest, getSchedulesRequest } from "@/services/scheduleService";
-import { Complaint, Schedule, User, UserRole } from "@/types/domain";
-import { extractErrorMessage } from "@/lib/api";
+import { Complaint, ComplaintStatus, Schedule, User, UserRole } from "@/types/domain";
+import api, { extractErrorMessage } from "@/lib/api";
 import { toast } from "sonner";
 import { getSocket } from "@/lib/socket";
 
@@ -64,6 +65,7 @@ const AdminDashboard = () => {
     activeRides: [],
   });
   const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [complaintResponseDrafts, setComplaintResponseDrafts] = useState<Record<string, string>>({});
   const [stats, setStats] = useState({
     students: 0,
     drivers: 0,
@@ -73,8 +75,10 @@ const AdminDashboard = () => {
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [updatingComplaintId, setUpdatingComplaintId] = useState<string | null>(null);
   const [showAddUser, setShowAddUser] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [userForm, setUserForm] = useState({
     name: "",
     email: "",
@@ -128,6 +132,29 @@ const AdminDashboard = () => {
   }, [loadDashboard]);
 
   useEffect(() => {
+    setComplaintResponseDrafts((prev) => {
+      const next = { ...prev };
+      let changed = false;
+
+      for (const complaint of complaints) {
+        if (next[complaint._id] === undefined) {
+          next[complaint._id] = complaint.adminResponse || "";
+          changed = true;
+        }
+      }
+
+      for (const complaintId of Object.keys(next)) {
+        if (!complaints.some((complaint) => complaint._id === complaintId)) {
+          delete next[complaintId];
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [complaints]);
+
+  useEffect(() => {
     const socket = getSocket();
     if (!socket) {
       return;
@@ -140,16 +167,20 @@ const AdminDashboard = () => {
     socket.on("queue:updated", refresh);
     socket.on("ride:updated", refresh);
     socket.on("complaint:new", refresh);
+    socket.on("complaint:statusUpdated", refresh);
 
     return () => {
       socket.off("queue:updated", refresh);
       socket.off("ride:updated", refresh);
       socket.off("complaint:new", refresh);
+      socket.off("complaint:statusUpdated", refresh);
     };
   }, [loadDashboard]);
 
   const filteredUsers = useMemo(
-    () => users.filter((u) => u.name.toLowerCase().includes(search.toLowerCase())),
+    () => users.filter(
+      (u) => u.status === "active" && u.name.toLowerCase().includes(search.toLowerCase()),
+    ),
     [users, search],
   );
 
@@ -187,14 +218,57 @@ const AdminDashboard = () => {
 
   const handleComplaintStatusUpdate = async (
     complaintId: string,
-    status: "waiting" | "assigned" | "completed",
+    payload: {
+      status?: ComplaintStatus;
+      adminResponse?: string;
+    },
   ) => {
+    const normalizedResponse = payload.adminResponse?.trim();
+    const requestPayload = {
+      status: payload.status,
+      adminResponse: normalizedResponse ? normalizedResponse : undefined,
+    };
+
+    if (!requestPayload.status && requestPayload.adminResponse === undefined) {
+      return;
+    }
+
+    setUpdatingComplaintId(complaintId);
     try {
-      await updateComplaintStatusRequest(complaintId, status);
+      const updated = await updateComplaintStatusRequest(complaintId, requestPayload);
+      setComplaintResponseDrafts((prev) => ({
+        ...prev,
+        [complaintId]: updated.adminResponse || "",
+      }));
       toast.success("Complaint status updated");
       await loadDashboard();
     } catch (updateError) {
       toast.error(extractErrorMessage(updateError, "Unable to update complaint"));
+    } finally {
+      setUpdatingComplaintId(null);
+    }
+  };
+
+  const handleDeactivateUser = async (targetUser: User) => {
+    if (
+      !window.confirm(
+        `Deactivate ${targetUser.name} (${targetUser.email})? This will block login and remove active assignments.`,
+      )
+    ) {
+      return;
+    }
+
+    setRemovingUserId(targetUser.id);
+
+    try {
+      await api.delete(`/users/${targetUser.id}`);
+      setUsers((prev) => prev.filter((user) => user.id !== targetUser.id));
+      toast.success("User deactivated");
+      await loadDashboard();
+    } catch (removeError) {
+      toast.error(extractErrorMessage(removeError, "Unable to deactivate user"));
+    } finally {
+      setRemovingUserId(null);
     }
   };
 
@@ -421,6 +495,18 @@ const AdminDashboard = () => {
               >
                 {u.status || "active"}
               </span>
+              <button
+                onClick={() => handleDeactivateUser(u)}
+                disabled={removingUserId === u.id}
+                className="h-8 px-2.5 rounded-lg border border-destructive/30 text-destructive text-xs font-semibold hover:bg-destructive/10 disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {removingUserId === u.id ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                Remove
+              </button>
             </motion.div>
           ))}
         </div>
@@ -442,22 +528,52 @@ const AdminDashboard = () => {
                   <span className="text-sm font-semibold">{c.student?.name || "Student"}</span>
                   <StatusBadge status={c.status} />
                 </div>
-                <p className="text-sm text-muted-foreground leading-relaxed">{c.description}</p>
-                <div className="flex gap-2">
-                  {(["waiting", "assigned", "completed"] as const).map((statusOption) => (
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {c.complaintText || c.description}
+                </p>
+                <div className="flex gap-2 flex-wrap">
+                  {(["submitted", "in_review", "resolved", "rejected"] as const).map((statusOption) => (
                     <button
                       key={statusOption}
-                      onClick={() => handleComplaintStatusUpdate(c._id, statusOption)}
+                      onClick={() =>
+                        handleComplaintStatusUpdate(c._id, {
+                          status: statusOption,
+                          adminResponse: complaintResponseDrafts[c._id] || "",
+                        })
+                      }
+                      disabled={updatingComplaintId === c._id}
                       className={`text-[11px] px-2.5 py-1 rounded-full border ${
                         c.status === statusOption
                           ? "border-primary text-primary"
                           : "border-border text-muted-foreground"
-                      }`}
+                      } disabled:opacity-50`}
                     >
                       {statusOption}
                     </button>
                   ))}
                 </div>
+                <textarea
+                  value={complaintResponseDrafts[c._id] || ""}
+                  onChange={(event) =>
+                    setComplaintResponseDrafts((prev) => ({
+                      ...prev,
+                      [c._id]: event.target.value,
+                    }))
+                  }
+                  placeholder="Admin response..."
+                  className="w-full min-h-20 px-3 py-2 rounded-lg bg-card border border-input text-sm"
+                />
+                <button
+                  onClick={() =>
+                    handleComplaintStatusUpdate(c._id, {
+                      adminResponse: complaintResponseDrafts[c._id] || "",
+                    })
+                  }
+                  disabled={updatingComplaintId === c._id}
+                  className="h-9 px-3 rounded-lg border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/5 disabled:opacity-50"
+                >
+                  Save Response
+                </button>
                 <span className="text-xs text-muted-foreground">
                   {new Date(c.createdAt).toLocaleString()}
                 </span>

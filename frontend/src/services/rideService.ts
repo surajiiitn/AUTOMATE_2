@@ -45,6 +45,14 @@ export const getStudentCurrentRideRequest = async () => {
   return response.data.data.currentRide;
 };
 
+export const leaveQueueRequest = async () => {
+  const response = await api.delete<ApiResponse<{ queueEntryId: string; status: string }>>(
+    "/rides/student/leave",
+  );
+
+  return response.data.data;
+};
+
 export const getStudentHistoryRequest = async () => {
   const response = await api.get<ApiResponse<{ rides: RideHistoryItem[] }>>("/rides/student/history");
   return response.data.data.rides;

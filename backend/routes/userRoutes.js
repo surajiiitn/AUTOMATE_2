@@ -1,5 +1,5 @@
 const express = require("express");
-const { body, query } = require("express-validator");
+const { body, param, query } = require("express-validator");
 const userController = require("../controllers/userController");
 const authMiddleware = require("../middleware/authMiddleware");
 const roleGuard = require("../middleware/roleGuard");
@@ -33,6 +33,32 @@ router.post(
   ],
   validateRequest,
   userController.createUser,
+);
+
+router.delete(
+  "/:id",
+  [
+    param("id").isMongoId().withMessage("Invalid user ID"),
+    query("permanent")
+      .optional()
+      .isBoolean()
+      .withMessage("permanent must be true or false"),
+  ],
+  validateRequest,
+  userController.removeUserById,
+);
+
+router.post(
+  "/remove-by-email",
+  [
+    body("email").trim().isEmail().withMessage("Valid email is required"),
+    body("permanent")
+      .optional()
+      .isBoolean()
+      .withMessage("permanent must be true or false"),
+  ],
+  validateRequest,
+  userController.removeUserByEmail,
 );
 
 module.exports = router;

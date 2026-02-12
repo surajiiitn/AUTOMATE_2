@@ -1,5 +1,5 @@
 import api from "@/lib/api";
-import { Complaint } from "@/types/domain";
+import { Complaint, ComplaintStatus } from "@/types/domain";
 
 interface ApiResponse<T> {
   success: boolean;
@@ -7,9 +7,9 @@ interface ApiResponse<T> {
   data: T;
 }
 
-export const submitComplaintRequest = async (description: string, rideId?: string | null) => {
+export const submitComplaintRequest = async (complaintText: string, rideId?: string | null) => {
   const response = await api.post<ApiResponse<{ complaint: Complaint }>>("/complaints", {
-    description,
+    complaintText,
     rideId: rideId || undefined,
   });
 
@@ -28,14 +28,18 @@ export const getAllComplaintsRequest = async () => {
 
 export const updateComplaintStatusRequest = async (
   complaintId: string,
-  status: "waiting" | "assigned" | "completed",
-  adminRemark?: string,
+  payload: {
+    status?: ComplaintStatus;
+    adminResponse?: string;
+  },
 ) => {
+  const { status, adminResponse } = payload;
+
   const response = await api.patch<ApiResponse<{ complaint: Complaint }>>(
     `/complaints/${complaintId}/status`,
     {
       status,
-      adminRemark,
+      adminResponse,
     },
   );
 

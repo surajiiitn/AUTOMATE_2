@@ -20,6 +20,8 @@ router.post(
   rideController.bookRide,
 );
 
+router.delete("/student/leave", roleGuard("student"), rideController.leaveQueue);
+router.delete("/student/queue", roleGuard("student"), rideController.leaveQueue);
 router.get("/student/current", roleGuard("student"), rideController.getStudentCurrentRide);
 router.get("/student/history", roleGuard("student"), rideController.getStudentHistory);
 

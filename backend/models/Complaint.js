@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 
+const COMPLAINT_STATUSES = ["submitted", "in_review", "resolved", "rejected"];
+
 const ComplaintSchema = new mongoose.Schema(
   {
     student: {
@@ -8,22 +10,38 @@ const ComplaintSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    trip: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Trip",
+      default: null,
+      index: true,
+    },
     ride: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Ride",
       default: null,
     },
-    description: {
+    complaintText: {
       type: String,
       required: true,
       trim: true,
       maxlength: 2000,
     },
+    description: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     status: {
       type: String,
-      enum: ["waiting", "assigned", "completed"],
-      default: "waiting",
+      enum: COMPLAINT_STATUSES,
+      default: "submitted",
       index: true,
+    },
+    adminResponse: {
+      type: String,
+      trim: true,
+      default: "",
     },
     adminRemark: {
       type: String,
@@ -39,4 +57,7 @@ const ComplaintSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-module.exports = mongoose.model("Complaint", ComplaintSchema);
+const Complaint = mongoose.model("Complaint", ComplaintSchema);
+
+module.exports = Complaint;
+module.exports.COMPLAINT_STATUSES = COMPLAINT_STATUSES;

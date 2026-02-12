@@ -9,6 +9,12 @@ const bookRide = asyncHandler(async (req, res) => {
   return success(res, { currentRide }, "Ride booked successfully", 201);
 });
 
+const leaveQueue = asyncHandler(async (req, res) => {
+  const data = await queueService.leaveQueue(req.user._id);
+  const currentRide = await queueService.getStudentCurrentRide(req.user._id);
+  return success(res, { ...data, currentRide }, "Left queue successfully");
+});
+
 const getStudentCurrentRide = asyncHandler(async (req, res) => {
   const currentRide = await queueService.getStudentCurrentRide(req.user._id);
   return success(res, { currentRide });
@@ -62,6 +68,7 @@ const getAdminStats = asyncHandler(async (_req, res) => {
 
 module.exports = {
   bookRide,
+  leaveQueue,
   getStudentCurrentRide,
   getStudentHistory,
   getDriverCurrentRide,
