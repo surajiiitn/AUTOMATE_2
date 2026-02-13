@@ -64,11 +64,22 @@ Backend runs on `http://localhost:5000` by default.
 - `RATE_LIMIT_WINDOW_MS`: global rate-limit window
 - `RATE_LIMIT_MAX`: global rate-limit max requests
 - `AUTH_RATE_LIMIT_MAX`: auth route limit
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`: SMTP provider config (required in production for emails)
+- `SMTP_SECURE`: optional, `true`/`false` override for TLS mode (if omitted, port `465` implies secure)
+- `SMTP_CONNECTION_TIMEOUT_MS`: SMTP connect timeout in milliseconds (default `15000`)
+- `SMTP_GREETING_TIMEOUT_MS`: SMTP greeting timeout in milliseconds (default `10000`)
+- `SMTP_SOCKET_TIMEOUT_MS`: SMTP socket timeout in milliseconds (default `20000`)
+- `SMTP_DNS_TIMEOUT_MS`: SMTP DNS timeout in milliseconds (default `10000`)
 
 Seed users (created if not present):
 - `SEED_ADMIN_NAME`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`
 - `SEED_DRIVER_NAME`, `SEED_DRIVER_EMAIL`, `SEED_DRIVER_PASSWORD`
 - `SEED_STUDENT_NAME`, `SEED_STUDENT_EMAIL`, `SEED_STUDENT_PASSWORD`
+
+### Production Email Notes
+- Many cloud hosts block outbound SMTP ports by default. If you still get timeout errors, allow outbound traffic for your SMTP host/port.
+- Common SMTP values: `587` with `SMTP_SECURE=false`, or `465` with `SMTP_SECURE=true`.
+- Use provider-specific app passwords/API SMTP credentials (for example Gmail/Outlook app-password flows), not your main login password.
 
 ## API Overview
 
