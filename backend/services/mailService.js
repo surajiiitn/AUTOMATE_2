@@ -1,37 +1,36 @@
 const https = require("https");
 
-const REQUIRED_SMTP_ENV_VARS = [
-  "SMTP_HOST",
-  "SMTP_PORT",
-  "SMTP_USER",
-  "SMTP_PASS",
-];
-
-const DEFAULT_SMTP_CONNECTION_TIMEOUT_MS = 15000;
-const DEFAULT_SMTP_GREETING_TIMEOUT_MS = 10000;
-const DEFAULT_SMTP_SOCKET_TIMEOUT_MS = 20000;
-const DEFAULT_SMTP_DNS_TIMEOUT_MS = 10000;
-const DEFAULT_SMTP_RETRY_COUNT = 2;
-const DEFAULT_SMTP_RETRY_DELAY_MS = 1500;
-const DEFAULT_PROVIDER_TIMEOUT_MS = 15000;
-const DEFAULT_TLS_MIN_VERSION = "TLSv1.2";
-
 let nodemailer;
 try {
-  // Lazy-safe load so this module can exist before dependency install.
   // eslint-disable-next-line global-require
   nodemailer = require("nodemailer");
 } catch (_error) {
   nodemailer = null;
 }
 
-let transporter = null;
-let usingDevelopmentFallback = false;
-let smtpWarmupPromise = null;
-let smtpWarmupStarted = false;
+const DEFAULT_SMTP_HOST = "smtp.gmail.com";
+const DEFAULT_SMTP_PORT = 465;
+const DEFAULT_SMTP_CONNECTION_TIMEOUT_MS = 15000;
+const DEFAULT_SMTP_GREETING_TIMEOUT_MS = 10000;
+const DEFAULT_SMTP_SOCKET_TIMEOUT_MS = 25000;
+const DEFAULT_SMTP_DNS_TIMEOUT_MS = 10000;
+const DEFAULT_SMTP_RETRY_COUNT = 2;
+const DEFAULT_SMTP_RETRY_DELAY_MS = 1500;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 15000;
+const DEFAULT_PROVIDER_RETRY_COUNT = 2;
+const DEFAULT_PROVIDER_RETRY_DELAY_MS = 1500;
+const DEFAULT_TLS_MIN_VERSION = "TLSv1.2";
+
+let smtpTransporter = null;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getErrorMessage = (error) => {
-  return error instanceof Error ? error.message : "Unknown mail service error";
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Unknown error";
 };
 
 const getErrorCode = (error) => {
@@ -42,60 +41,124 @@ const getErrorCode = (error) => {
   return String(error.code || "UNKNOWN");
 };
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const getMissingSmtpEnvVars = () => {
-  return REQUIRED_SMTP_ENV_VARS.filter((key) => !process.env[key]);
-};
-
-const parsePositiveNumberEnv = (key, fallback) => {
-  const rawValue = process.env[key];
-  if (!rawValue) {
+const parseBooleanEnv = (key, fallback = null) => {
+  const value = process.env[key];
+  if (value === undefined || value === null || String(value).trim() === "") {
     return fallback;
   }
 
-  const parsedValue = Number(rawValue);
-  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-    throw new Error(`Invalid ${key}. Provide a positive number in milliseconds.`);
-  }
-
-  return parsedValue;
-};
-
-const parseNonNegativeIntegerEnv = (key, fallback) => {
-  const rawValue = process.env[key];
-  if (!rawValue) {
-    return fallback;
-  }
-
-  const parsedValue = Number(rawValue);
-  if (!Number.isInteger(parsedValue) || parsedValue < 0) {
-    throw new Error(`Invalid ${key}. Provide a non-negative integer.`);
-  }
-
-  return parsedValue;
-};
-
-const parseOptionalBooleanEnv = (key) => {
-  const rawValue = process.env[key];
-  if (!rawValue) {
-    return null;
-  }
-
-  const normalizedValue = rawValue.trim().toLowerCase();
-  if (["true", "1", "yes"].includes(normalizedValue)) {
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
     return true;
   }
-
-  if (["false", "0", "no"].includes(normalizedValue)) {
+  if (["0", "false", "no", "off"].includes(normalized)) {
     return false;
   }
 
-  throw new Error(`Invalid ${key}. Use true or false.`);
+  throw new Error(`Invalid ${key}. Use true/false.`);
 };
 
-const getSmtpTimeoutConfig = () => {
+const parsePositiveNumberEnv = (key, fallback) => {
+  const value = process.env[key];
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${key}. Use a positive number.`);
+  }
+
+  return parsed;
+};
+
+const parseNonNegativeIntegerEnv = (key, fallback) => {
+  const value = process.env[key];
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${key}. Use a non-negative integer.`);
+  }
+
+  return parsed;
+};
+
+const maskSecret = (value) => {
+  if (!value || typeof value !== "string") {
+    return "missing";
+  }
+
+  if (value.length <= 8) {
+    return "********";
+  }
+
+  return `${value.slice(0, 4)}...${value.slice(-2)}`;
+};
+
+const isSmtpTimeoutOrNetworkError = (error) => {
+  const code = getErrorCode(error);
+  const message = getErrorMessage(error).toLowerCase();
+
+  return (
+    [
+      "ETIMEDOUT",
+      "ESOCKET",
+      "ENETUNREACH",
+      "EHOSTUNREACH",
+      "ECONNRESET",
+      "ECONNREFUSED",
+      "ECONNECTION",
+      "EAI_AGAIN",
+    ].includes(code)
+    || message.includes("timeout")
+    || message.includes("timed out")
+    || message.includes("greeting never received")
+    || message.includes("connection closed")
+  );
+};
+
+const getMailFrom = () => {
+  return (
+    process.env.MAIL_FROM
+    || process.env.RESEND_FROM
+    || process.env.SENDGRID_FROM
+    || process.env.SMTP_USER
+    || "Auto Mate <no-reply@localhost>"
+  );
+};
+
+const getSmtpConfig = () => {
+  const user = process.env.SMTP_USER || process.env.GMAIL_USER || "";
+  const pass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || "";
+
+  if (!user || !pass) {
+    return {
+      enabled: false,
+      reason: "SMTP_USER/SMTP_PASS (or GMAIL_USER/GMAIL_APP_PASSWORD) missing",
+    };
+  }
+
+  const port = parsePositiveNumberEnv("SMTP_PORT", DEFAULT_SMTP_PORT);
+  const secure = parseBooleanEnv("SMTP_SECURE", port === 465);
+  const requireTLS = parseBooleanEnv("SMTP_REQUIRE_TLS", true);
+  const rejectUnauthorized = parseBooleanEnv("SMTP_TLS_REJECT_UNAUTHORIZED", true);
+  const host = process.env.SMTP_HOST || DEFAULT_SMTP_HOST;
+
   return {
+    enabled: true,
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+    requireTLS,
+    tls: {
+      servername: host,
+      minVersion: process.env.SMTP_TLS_MIN_VERSION || DEFAULT_TLS_MIN_VERSION,
+      rejectUnauthorized,
+    },
     connectionTimeout: parsePositiveNumberEnv(
       "SMTP_CONNECTION_TIMEOUT_MS",
       DEFAULT_SMTP_CONNECTION_TIMEOUT_MS,
@@ -108,212 +171,57 @@ const getSmtpTimeoutConfig = () => {
       "SMTP_SOCKET_TIMEOUT_MS",
       DEFAULT_SMTP_SOCKET_TIMEOUT_MS,
     ),
-    dnsTimeout: parsePositiveNumberEnv(
-      "SMTP_DNS_TIMEOUT_MS",
-      DEFAULT_SMTP_DNS_TIMEOUT_MS,
-    ),
+    dnsTimeout: parsePositiveNumberEnv("SMTP_DNS_TIMEOUT_MS", DEFAULT_SMTP_DNS_TIMEOUT_MS),
   };
 };
 
-const getSmtpRetryConfig = () => {
-  return {
-    retries: parseNonNegativeIntegerEnv("SMTP_RETRY_COUNT", DEFAULT_SMTP_RETRY_COUNT),
-    retryDelayMs: parsePositiveNumberEnv("SMTP_RETRY_DELAY_MS", DEFAULT_SMTP_RETRY_DELAY_MS),
-  };
-};
-
-const getProviderTimeoutMs = () => {
-  return parsePositiveNumberEnv("MAIL_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS);
-};
-
-const requireMailerConfig = () => {
-  const missingVars = getMissingSmtpEnvVars();
-  if (missingVars.length > 0) {
-    throw new Error(`Missing required SMTP environment variables: ${missingVars.join(", ")}`);
-  }
-
-  const smtpPort = Number(process.env.SMTP_PORT);
-  if (!Number.isFinite(smtpPort) || smtpPort <= 0) {
-    throw new Error("Invalid SMTP_PORT. Provide a valid numeric port.");
-  }
-
-  return {
-    smtpHost: process.env.SMTP_HOST,
-    smtpPort,
-    smtpSecure: parseOptionalBooleanEnv("SMTP_SECURE"),
-    smtpUser: process.env.SMTP_USER,
-    smtpPass: process.env.SMTP_PASS,
-  };
-};
-
-const getMailFrom = () => {
-  return process.env.MAIL_FROM || process.env.SMTP_USER || "Auto Mate <no-reply@localhost>";
-};
-
-const getTransporter = () => {
+const getSmtpTransporter = () => {
   if (!nodemailer) {
-    throw new Error("Nodemailer is not installed. Install it with: npm install nodemailer");
+    throw new Error("Nodemailer is not installed.");
   }
 
-  if (transporter) {
-    return transporter;
+  const smtpConfig = getSmtpConfig();
+  if (!smtpConfig.enabled) {
+    throw new Error(`SMTP disabled: ${smtpConfig.reason}`);
   }
 
-  const missingVars = getMissingSmtpEnvVars();
-  const isProduction = process.env.NODE_ENV === "production";
-
-  if (missingVars.length > 0) {
-    if (isProduction) {
-      throw new Error(`Missing required SMTP environment variables: ${missingVars.join(", ")}`);
-    }
-
-    // Local/dev fallback so mail-dependent flows can continue without SMTP credentials.
-    transporter = nodemailer.createTransport({
-      jsonTransport: true,
-    });
-    usingDevelopmentFallback = true;
-    return transporter;
+  if (smtpTransporter) {
+    return smtpTransporter;
   }
 
-  const {
-    smtpHost,
-    smtpPort,
-    smtpSecure,
-    smtpUser,
-    smtpPass,
-  } = requireMailerConfig();
-
-  const secure = smtpSecure === null ? smtpPort === 465 : smtpSecure;
-  const tlsRejectUnauthorized = parseOptionalBooleanEnv("SMTP_TLS_REJECT_UNAUTHORIZED");
-  const smtpRequireTlsOverride = parseOptionalBooleanEnv("SMTP_REQUIRE_TLS");
-  const tlsMinVersion = process.env.SMTP_TLS_MIN_VERSION || DEFAULT_TLS_MIN_VERSION;
-
-  transporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure,
-    auth: {
-      user: smtpUser,
-      pass: smtpPass,
-    },
-    requireTLS: smtpRequireTlsOverride === null ? !secure : smtpRequireTlsOverride,
-    tls: {
-      servername: smtpHost,
-      minVersion: tlsMinVersion,
-      rejectUnauthorized: tlsRejectUnauthorized === null ? true : tlsRejectUnauthorized,
-    },
-    ...getSmtpTimeoutConfig(),
+  smtpTransporter = nodemailer.createTransport({
+    host: smtpConfig.host,
+    port: smtpConfig.port,
+    secure: smtpConfig.secure,
+    auth: smtpConfig.auth,
+    requireTLS: smtpConfig.requireTLS,
+    tls: smtpConfig.tls,
+    connectionTimeout: smtpConfig.connectionTimeout,
+    greetingTimeout: smtpConfig.greetingTimeout,
+    socketTimeout: smtpConfig.socketTimeout,
+    dnsTimeout: smtpConfig.dnsTimeout,
   });
 
-  usingDevelopmentFallback = false;
-  return transporter;
+  return smtpTransporter;
 };
 
-const warmupTransporterAtStartup = async () => {
-  if (smtpWarmupStarted) {
-    return smtpWarmupPromise;
-  }
-
-  smtpWarmupStarted = true;
-  smtpWarmupPromise = (async () => {
-    if (!nodemailer) {
-      // eslint-disable-next-line no-console
-      console.error("[mail][startup] Nodemailer not installed; SMTP warmup skipped.");
-      return false;
-    }
-
-    const missingVars = getMissingSmtpEnvVars();
-    if (missingVars.length > 0) {
-      if (process.env.NODE_ENV === "production") {
-        // eslint-disable-next-line no-console
-        console.error(
-          `[mail][startup] SMTP warmup skipped; missing vars: ${missingVars.join(", ")}`,
-        );
-      }
-      return false;
-    }
-
-    try {
-      const mailTransporter = getTransporter();
-      await mailTransporter.verify();
-      // eslint-disable-next-line no-console
-      console.log("[mail][startup] SMTP transporter verify succeeded.");
-      return true;
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[mail][startup] SMTP transporter verify failed (${getErrorCode(error)}): ${getErrorMessage(error)}`,
-      );
-      return false;
-    }
-  })();
-
-  return smtpWarmupPromise;
-};
-
-const isSmtpTimeoutError = (error) => {
-  const errorCode = getErrorCode(error);
-  const message = getErrorMessage(error).toLowerCase();
-
-  return (
-    ["ETIMEDOUT", "ESOCKET", "ECONNECTION", "ECONNRESET", "EAI_AGAIN"].includes(errorCode)
-    || message.includes("timed out")
-    || message.includes("timeout")
-    || message.includes("greeting never received")
-    || message.includes("connection closed")
-  );
-};
-
-const sendViaSmtp = async (mailOptions) => {
-  const { retries, retryDelayMs } = getSmtpRetryConfig();
-  const totalAttempts = retries + 1;
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
-    try {
-      const mailTransporter = getTransporter();
-      const info = await mailTransporter.sendMail(mailOptions);
-
-      return {
-        messageId: info.messageId,
-        accepted: info.accepted || [],
-        rejected: info.rejected || [],
-        transport: usingDevelopmentFallback ? "development-fallback" : "smtp",
-      };
-    } catch (error) {
-      lastError = error;
-      // eslint-disable-next-line no-console
-      console.error(
-        `[mail][smtp] Send attempt ${attempt}/${totalAttempts} failed (${getErrorCode(error)}): ${getErrorMessage(error)}`,
-      );
-
-      if (attempt < totalAttempts) {
-        await sleep(retryDelayMs);
-      }
-    }
-  }
-
-  throw lastError || new Error("SMTP send failed");
-};
-
-const parseMailFromAddress = (mailFrom) => {
-  const trimmed = String(mailFrom || "").trim();
-  const bracketMatch = trimmed.match(/^(.*)<([^>]+)>$/);
-
+const parseFromAddress = (value) => {
+  const raw = String(value || "").trim();
+  const bracketMatch = raw.match(/^(.*)<([^>]+)>$/);
   if (bracketMatch) {
     const name = bracketMatch[1].trim().replace(/^"|"$/g, "");
     const email = bracketMatch[2].trim();
     return {
+      raw,
       email,
       name: name || undefined,
-      raw: trimmed,
     };
   }
 
   return {
-    email: trimmed,
+    raw,
+    email: raw,
     name: undefined,
-    raw: trimmed,
   };
 };
 
@@ -333,16 +241,16 @@ const requestJson = ({ hostname, path, headers, payload, timeoutMs }) => {
         },
       },
       (res) => {
-        let responseBody = "";
+        let rawBody = "";
         res.setEncoding("utf8");
         res.on("data", (chunk) => {
-          responseBody += chunk;
+          rawBody += chunk;
         });
         res.on("end", () => {
           let parsedBody = null;
-          if (responseBody) {
+          if (rawBody) {
             try {
-              parsedBody = JSON.parse(responseBody);
+              parsedBody = JSON.parse(rawBody);
             } catch (_error) {
               parsedBody = null;
             }
@@ -352,14 +260,14 @@ const requestJson = ({ hostname, path, headers, payload, timeoutMs }) => {
             statusCode: res.statusCode || 0,
             headers: res.headers,
             body: parsedBody,
-            rawBody: responseBody,
+            rawBody,
           });
         });
       },
     );
 
     req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`HTTP request timeout after ${timeoutMs}ms`));
+      req.destroy(new Error(`HTTP request timed out after ${timeoutMs}ms`));
     });
     req.on("error", reject);
     req.write(body);
@@ -367,19 +275,17 @@ const requestJson = ({ hostname, path, headers, payload, timeoutMs }) => {
   });
 };
 
-const extractProviderErrorMessage = (response) => {
+const extractProviderError = (response) => {
   if (response.body && typeof response.body === "object") {
     if (typeof response.body.message === "string" && response.body.message.trim()) {
       return response.body.message;
     }
-
     if (typeof response.body.error === "string" && response.body.error.trim()) {
       return response.body.error;
     }
-
     if (Array.isArray(response.body.errors) && response.body.errors.length > 0) {
       const firstError = response.body.errors[0];
-      if (typeof firstError === "string" && firstError.trim()) {
+      if (typeof firstError === "string") {
         return firstError;
       }
       if (
@@ -397,23 +303,82 @@ const extractProviderErrorMessage = (response) => {
     return response.rawBody.slice(0, 300);
   }
 
-  return "No additional details";
+  return "No provider error details";
+};
+
+const withRetries = async ({
+  label,
+  retries,
+  retryDelayMs,
+  shouldRetry = () => true,
+  task,
+}) => {
+  const totalAttempts = retries + 1;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+    try {
+      return await task(attempt, totalAttempts);
+    } catch (error) {
+      lastError = error;
+      // eslint-disable-next-line no-console
+      console.error(
+        `[mail][${label}] attempt ${attempt}/${totalAttempts} failed (${getErrorCode(error)}): ${getErrorMessage(error)}`,
+      );
+
+      if (attempt < totalAttempts && shouldRetry(error)) {
+        await sleep(retryDelayMs);
+      } else if (attempt < totalAttempts) {
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error(`All ${label} attempts failed`);
+};
+
+const sendViaSmtp = async ({ to, subject, htmlContent, mailFrom }) => {
+  const retries = parseNonNegativeIntegerEnv("SMTP_RETRY_COUNT", DEFAULT_SMTP_RETRY_COUNT);
+  const retryDelayMs = parsePositiveNumberEnv("SMTP_RETRY_DELAY_MS", DEFAULT_SMTP_RETRY_DELAY_MS);
+
+  return withRetries({
+    label: "smtp",
+    retries,
+    retryDelayMs,
+    shouldRetry: () => true,
+    task: async () => {
+      const transporter = getSmtpTransporter();
+      const info = await transporter.sendMail({
+        from: mailFrom,
+        to,
+        subject,
+        html: htmlContent,
+      });
+
+      return {
+        transport: "smtp",
+        messageId: info.messageId || null,
+        accepted: info.accepted || [],
+        rejected: info.rejected || [],
+      };
+    },
+  });
 };
 
 const sendViaResend = async ({ to, subject, htmlContent, mailFrom }) => {
   if (!process.env.RESEND_API_KEY) {
-    throw new Error("RESEND_API_KEY is not configured");
+    throw new Error("RESEND_API_KEY not configured");
   }
 
   const response = await requestJson({
     hostname: "api.resend.com",
     path: "/emails",
-    timeoutMs: getProviderTimeoutMs(),
+    timeoutMs: parsePositiveNumberEnv("MAIL_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
     },
     payload: {
-      from: mailFrom,
+      from: process.env.RESEND_FROM || mailFrom,
       to: [to],
       subject,
       html: htmlContent,
@@ -422,32 +387,30 @@ const sendViaResend = async ({ to, subject, htmlContent, mailFrom }) => {
 
   if (response.statusCode >= 200 && response.statusCode < 300) {
     return {
+      transport: "resend",
       messageId: response.body?.id || null,
       accepted: [to],
       rejected: [],
-      transport: "resend",
     };
   }
 
-  throw new Error(
-    `[resend] HTTP ${response.statusCode}: ${extractProviderErrorMessage(response)}`,
-  );
+  throw new Error(`[resend] HTTP ${response.statusCode}: ${extractProviderError(response)}`);
 };
 
 const sendViaSendGrid = async ({ to, subject, htmlContent, mailFrom }) => {
   if (!process.env.SENDGRID_API_KEY) {
-    throw new Error("SENDGRID_API_KEY is not configured");
+    throw new Error("SENDGRID_API_KEY not configured");
   }
 
-  const from = parseMailFromAddress(mailFrom);
+  const from = parseFromAddress(process.env.SENDGRID_FROM || mailFrom);
   if (!from.email || !from.email.includes("@")) {
-    throw new Error("MAIL_FROM must contain a valid sender email for SendGrid fallback");
+    throw new Error("Invalid sender email for SendGrid. Set SENDGRID_FROM or MAIL_FROM.");
   }
 
   const response = await requestJson({
     hostname: "api.sendgrid.com",
     path: "/v3/mail/send",
-    timeoutMs: getProviderTimeoutMs(),
+    timeoutMs: parsePositiveNumberEnv("MAIL_PROVIDER_TIMEOUT_MS", DEFAULT_PROVIDER_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
     },
@@ -457,9 +420,7 @@ const sendViaSendGrid = async ({ to, subject, htmlContent, mailFrom }) => {
           to: [{ email: to }],
         },
       ],
-      from: from.name
-        ? { email: from.email, name: from.name }
-        : { email: from.email },
+      from: from.name ? { email: from.email, name: from.name } : { email: from.email },
       subject,
       content: [
         {
@@ -473,117 +434,166 @@ const sendViaSendGrid = async ({ to, subject, htmlContent, mailFrom }) => {
   if (response.statusCode >= 200 && response.statusCode < 300) {
     const providerMessageId = response.headers["x-message-id"];
     return {
-      messageId: Array.isArray(providerMessageId) ? providerMessageId[0] : providerMessageId || null,
+      transport: "sendgrid",
+      messageId: Array.isArray(providerMessageId)
+        ? providerMessageId[0]
+        : providerMessageId || null,
       accepted: [to],
       rejected: [],
-      transport: "sendgrid",
     };
   }
 
-  throw new Error(
-    `[sendgrid] HTTP ${response.statusCode}: ${extractProviderErrorMessage(response)}`,
-  );
+  throw new Error(`[sendgrid] HTTP ${response.statusCode}: ${extractProviderError(response)}`);
 };
 
-const sendViaFallbackProvider = async ({ to, subject, htmlContent, mailFrom }) => {
+const sendViaFallbackProviders = async ({ to, subject, htmlContent, mailFrom }) => {
   const providers = [];
+
   if (process.env.RESEND_API_KEY) {
     providers.push({
       name: "resend",
-      fn: sendViaResend,
+      send: sendViaResend,
     });
   }
   if (process.env.SENDGRID_API_KEY) {
     providers.push({
       name: "sendgrid",
-      fn: sendViaSendGrid,
+      send: sendViaSendGrid,
     });
   }
 
   if (providers.length === 0) {
-    throw new Error("No fallback provider configured. Set RESEND_API_KEY or SENDGRID_API_KEY.");
+    throw new Error("No fallback email API configured (RESEND_API_KEY or SENDGRID_API_KEY).");
   }
 
-  let lastError = null;
+  const retries = parseNonNegativeIntegerEnv(
+    "MAIL_PROVIDER_RETRY_COUNT",
+    DEFAULT_PROVIDER_RETRY_COUNT,
+  );
+  const retryDelayMs = parsePositiveNumberEnv(
+    "MAIL_PROVIDER_RETRY_DELAY_MS",
+    DEFAULT_PROVIDER_RETRY_DELAY_MS,
+  );
+
+  const failures = [];
+
   for (const provider of providers) {
     try {
-      return await provider.fn({
-        to,
-        subject,
-        htmlContent,
-        mailFrom,
+      const result = await withRetries({
+        label: provider.name,
+        retries,
+        retryDelayMs,
+        task: async () => {
+          return provider.send({
+            to,
+            subject,
+            htmlContent,
+            mailFrom,
+          });
+        },
       });
+
+      return result;
     } catch (error) {
-      lastError = error;
+      failures.push(`${provider.name}: ${getErrorMessage(error)}`);
       // eslint-disable-next-line no-console
       console.error(
-        `[mail][${provider.name}] Fallback provider failed (${getErrorCode(error)}): ${getErrorMessage(error)}`,
+        `[mail][${provider.name}] exhausted retries (${getErrorCode(error)}): ${getErrorMessage(error)}`,
       );
     }
   }
 
-  throw lastError || new Error("All fallback providers failed");
+  throw new Error(`All fallback providers failed. ${failures.join(" | ")}`);
 };
 
 const sendMail = async (to, subject, htmlContent) => {
   if (!to || typeof to !== "string") {
-    throw new Error("Invalid 'to' email address");
+    throw new Error("Invalid recipient email");
   }
-
   if (!subject || typeof subject !== "string") {
     throw new Error("Invalid email subject");
   }
-
   if (!htmlContent || typeof htmlContent !== "string") {
-    throw new Error("Invalid email HTML content");
+    throw new Error("Invalid email html content");
   }
 
   const mailFrom = getMailFrom();
 
   try {
-    return await sendViaSmtp({
-      from: mailFrom,
+    const smtpResult = await sendViaSmtp({
       to,
       subject,
-      html: htmlContent,
+      htmlContent,
+      mailFrom,
     });
+    // eslint-disable-next-line no-console
+    console.log(`[mail] delivered via SMTP (messageId=${smtpResult.messageId || "n/a"})`);
+    return smtpResult;
   } catch (smtpError) {
-    const smtpErrorMessage = getErrorMessage(smtpError);
-    const timeoutHint = isSmtpTimeoutError(smtpError)
-      ? " Check SMTP_HOST/SMTP_PORT, Render egress rules, and Gmail app-password settings."
+    const timeoutHint = isSmtpTimeoutOrNetworkError(smtpError)
+      ? " Likely outbound SMTP blocked from hosting provider; using API fallback."
       : "";
 
     // eslint-disable-next-line no-console
     console.error(
-      `[mail] SMTP send failed after retries (${getErrorCode(smtpError)}): ${smtpErrorMessage}.${timeoutHint}`,
+      `[mail] SMTP failed (${getErrorCode(smtpError)}): ${getErrorMessage(smtpError)}.${timeoutHint}`,
     );
+  }
 
-    try {
-      const fallbackResult = await sendViaFallbackProvider({
-        to,
-        subject,
-        htmlContent,
-        mailFrom,
-      });
-      // eslint-disable-next-line no-console
-      console.log(
-        `[mail] Sent using fallback transport '${fallbackResult.transport}' after SMTP failure.`,
-      );
-      return fallbackResult;
-    } catch (fallbackError) {
-      const wrappedError = new Error(
-        `Failed to send email. SMTP error: ${smtpErrorMessage}. Fallback error: ${getErrorMessage(fallbackError)}`,
-      );
-      wrappedError.cause = fallbackError;
-      throw wrappedError;
-    }
+  try {
+    const fallbackResult = await sendViaFallbackProviders({
+      to,
+      subject,
+      htmlContent,
+      mailFrom,
+    });
+    // eslint-disable-next-line no-console
+    console.log(
+      `[mail] delivered via fallback '${fallbackResult.transport}' (messageId=${fallbackResult.messageId || "n/a"})`,
+    );
+    return fallbackResult;
+  } catch (fallbackError) {
+    const error = new Error(
+      `Email delivery failed on SMTP and fallback APIs: ${getErrorMessage(fallbackError)}`,
+    );
+    error.cause = fallbackError;
+    throw error;
+  }
+};
+
+const warmupSmtp = async () => {
+  if (!nodemailer) {
+    // eslint-disable-next-line no-console
+    console.error("[mail][startup] Nodemailer not installed; SMTP warmup skipped.");
+    return;
+  }
+
+  const smtpConfig = getSmtpConfig();
+  if (!smtpConfig.enabled) {
+    // eslint-disable-next-line no-console
+    console.error(`[mail][startup] SMTP warmup skipped: ${smtpConfig.reason}`);
+    return;
+  }
+
+  try {
+    const transporter = getSmtpTransporter();
+    await transporter.verify();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[mail][startup] SMTP verify succeeded host=${smtpConfig.host}:${smtpConfig.port} user=${maskSecret(smtpConfig.auth.user)}`,
+    );
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[mail][startup] SMTP verify failed (${getErrorCode(error)}): ${getErrorMessage(error)}`,
+    );
   }
 };
 
 setImmediate(() => {
-  warmupTransporterAtStartup().catch((error) => {
+  warmupSmtp().catch((error) => {
     // eslint-disable-next-line no-console
-    console.error(`[mail][startup] Unexpected warmup error: ${getErrorMessage(error)}`);
+    console.error(`[mail][startup] unexpected warmup error: ${getErrorMessage(error)}`);
   });
 });
 
