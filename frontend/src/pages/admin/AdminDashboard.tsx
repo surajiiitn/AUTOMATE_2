@@ -11,6 +11,7 @@ import {
   CalendarDays,
   Loader2,
   Trash2,
+  KeyRound,
 } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { useLocation } from "react-router-dom";
@@ -53,11 +54,17 @@ const mapPathToTab = (path: string): Tab => {
   return "overview";
 };
 
+const getUserStatus = (user: User): "active" | "inactive" => (
+  user.status === "inactive" ? "inactive" : "active"
+);
+
 const AdminDashboard = () => {
   const location = useLocation();
 
   const [tab, setTab] = useState<Tab>(mapPathToTab(location.pathname));
   const [search, setSearch] = useState("");
+  const [userRoleFilter, setUserRoleFilter] = useState<"all" | UserRole>("all");
+  const [userStatusFilter, setUserStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [users, setUsers] = useState<User[]>([]);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [queueOverview, setQueueOverview] = useState<AdminQueueOverview>({
@@ -79,6 +86,9 @@ const AdminDashboard = () => {
   const [showAddUser, setShowAddUser] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [reactivatingUserId, setReactivatingUserId] = useState<string | null>(null);
+  const [resettingPasswordUserId, setResettingPasswordUserId] = useState<string | null>(null);
+  const [permanentDeletingUserId, setPermanentDeletingUserId] = useState<string | null>(null);
   const [userForm, setUserForm] = useState({
     name: "",
     email: "",
@@ -177,11 +187,30 @@ const AdminDashboard = () => {
     };
   }, [loadDashboard]);
 
+  const userStats = useMemo(() => {
+    const active = users.filter((user) => getUserStatus(user) === "active").length;
+    return {
+      total: users.length,
+      active,
+      inactive: users.length - active,
+    };
+  }, [users]);
+
   const filteredUsers = useMemo(
-    () => users.filter(
-      (u) => u.status === "active" && u.name.toLowerCase().includes(search.toLowerCase()),
-    ),
-    [users, search],
+    () => users.filter((u) => {
+      const query = search.toLowerCase();
+      const status = getUserStatus(u);
+
+      const matchesSearch = (
+        u.name.toLowerCase().includes(query) ||
+        u.email.toLowerCase().includes(query)
+      );
+      const matchesRole = userRoleFilter === "all" || u.role === userRoleFilter;
+      const matchesStatus = userStatusFilter === "all" || status === userStatusFilter;
+
+      return matchesSearch && matchesRole && matchesStatus;
+    }),
+    [users, search, userRoleFilter, userStatusFilter],
   );
 
   const driverUsers = useMemo(() => users.filter((u) => u.role === "driver"), [users]);
@@ -272,6 +301,64 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleReactivateUser = async (targetUser: User) => {
+    setReactivatingUserId(targetUser.id);
+
+    try {
+      await api.post(`/admin/users/${targetUser.id}/reactivate`);
+      setUsers((prev) => prev.map((user) => (
+        user.id === targetUser.id
+          ? {
+              ...user,
+              status: "active",
+            }
+          : user
+      )));
+      toast.success("User reactivated");
+      await loadDashboard();
+    } catch (reactivateError) {
+      toast.error(extractErrorMessage(reactivateError, "Unable to reactivate user"));
+    } finally {
+      setReactivatingUserId(null);
+    }
+  };
+
+  const handleResetPassword = async (targetUser: User) => {
+    if (!window.confirm(`Send temporary password to ${targetUser.email}?`)) {
+      return;
+    }
+
+    setResettingPasswordUserId(targetUser.id);
+
+    try {
+      await api.post(`/admin/users/${targetUser.id}/reset-password`);
+      toast.success("Temporary password sent to user email");
+    } catch (resetError) {
+      toast.error(extractErrorMessage(resetError, "Unable to reset password"));
+    } finally {
+      setResettingPasswordUserId(null);
+    }
+  };
+
+  const handlePermanentDeleteUser = async (targetUser: User) => {
+    if (!window.confirm("This action cannot be undone")) {
+      return;
+    }
+
+    setPermanentDeletingUserId(targetUser.id);
+
+    try {
+      await api.delete(`/admin/users/${targetUser.id}/permanent-delete`);
+      setUsers((prev) => prev.filter((user) => user.id !== targetUser.id));
+      toast.success("User permanently deleted");
+      await loadDashboard();
+    } catch (deleteError) {
+      toast.error(extractErrorMessage(deleteError, "Unable to permanently delete user"));
+    } finally {
+      setPermanentDeletingUserId(null);
+    }
+  };
+
   const handleCreateSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsCreatingSchedule(true);
@@ -340,7 +427,7 @@ const AdminDashboard = () => {
   ];
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className={`${tab === "users" ? "max-w-6xl" : "max-w-2xl"} mx-auto space-y-6`}>
       <motion.div {...fadeUp}>
         <h1 className="font-display text-2xl font-bold tracking-tight">Admin Panel</h1>
         <p className="text-muted-foreground text-sm mt-0.5">Manage your campus transport</p>
@@ -391,7 +478,22 @@ const AdminDashboard = () => {
 
       {tab === "users" && !isLoading ? (
         <div className="space-y-3">
-          <div className="flex gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="card-elevated p-3">
+              <div className="text-xs text-muted-foreground">Total users</div>
+              <div className="text-lg font-semibold">{userStats.total}</div>
+            </div>
+            <div className="card-elevated p-3">
+              <div className="text-xs text-muted-foreground">Active</div>
+              <div className="text-lg font-semibold text-success">{userStats.active}</div>
+            </div>
+            <div className="card-elevated p-3">
+              <div className="text-xs text-muted-foreground">Inactive</div>
+              <div className="text-lg font-semibold text-muted-foreground">{userStats.inactive}</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-2">
             <div className="flex-1 relative">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
@@ -401,11 +503,30 @@ const AdminDashboard = () => {
                 className="w-full h-11 pl-10 pr-4 rounded-xl bg-card border border-input text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
               />
             </div>
+            <select
+              value={userRoleFilter}
+              onChange={(e) => setUserRoleFilter(e.target.value as "all" | UserRole)}
+              className="h-11 px-3 rounded-xl bg-card border border-input text-sm"
+            >
+              <option value="all">All roles</option>
+              <option value="student">Student</option>
+              <option value="driver">Driver</option>
+              <option value="admin">Admin</option>
+            </select>
+            <select
+              value={userStatusFilter}
+              onChange={(e) => setUserStatusFilter(e.target.value as "all" | "active" | "inactive")}
+              className="h-11 px-3 rounded-xl bg-card border border-input text-sm"
+            >
+              <option value="all">All status</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
             <button
               onClick={() => setShowAddUser((prev) => !prev)}
               className="h-11 px-5 rounded-xl btn-primary text-sm flex items-center gap-1.5"
             >
-              <Plus className="w-4 h-4" /> Add
+              <Plus className="w-4 h-4" /> {showAddUser ? "Close" : "Add User"}
             </button>
           </div>
 
@@ -470,45 +591,106 @@ const AdminDashboard = () => {
             </form>
           ) : null}
 
-          {filteredUsers.map((u, i) => (
-            <motion.div
-              key={u.id}
-              {...fadeUp}
-              transition={{ delay: i * 0.03 }}
-              className="card-interactive p-4 flex items-center gap-3"
-            >
-              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary text-sm font-bold">
-                {u.name.charAt(0)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold">{u.name}</div>
-                <div className="text-xs text-muted-foreground">
-                  {u.email} • <span className="capitalize">{u.role}</span>
-                </div>
-              </div>
-              <span
-                className={`text-xs px-2.5 py-1 rounded-full font-semibold ${
-                  u.status === "active"
-                    ? "bg-success/10 text-success"
-                    : "bg-muted text-muted-foreground"
-                }`}
-              >
-                {u.status || "active"}
-              </span>
-              <button
-                onClick={() => handleDeactivateUser(u)}
-                disabled={removingUserId === u.id}
-                className="h-8 px-2.5 rounded-lg border border-destructive/30 text-destructive text-xs font-semibold hover:bg-destructive/10 disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {removingUserId === u.id ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-                Remove
-              </button>
-            </motion.div>
-          ))}
+          {filteredUsers.length === 0 ? (
+            <div className="card-elevated p-6 text-center">
+              <p className="text-sm font-semibold">No users found</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Try a different search term or update the filters.
+              </p>
+            </div>
+          ) : (
+            filteredUsers.map((u, i) => {
+              const status = getUserStatus(u);
+              const isActive = status === "active";
+              const isToggleLoading = (
+                (isActive && removingUserId === u.id)
+                || (!isActive && reactivatingUserId === u.id)
+              );
+
+              return (
+                <motion.div
+                  key={u.id}
+                  {...fadeUp}
+                  transition={{ delay: i * 0.03 }}
+                  className="card-interactive p-4 space-y-3"
+                >
+                  <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary text-sm font-bold">
+                      {u.name.charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold truncate">{u.name}</div>
+                      <div className="text-xs text-muted-foreground truncate">{u.email}</div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-primary/10 text-primary capitalize">
+                        {u.role}
+                      </span>
+                      <span
+                        className={`text-xs px-2.5 py-1 rounded-full font-semibold ${
+                          isActive
+                            ? "bg-success/10 text-success"
+                            : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {status}
+                      </span>
+                      {u.role === "driver" && u.vehicleNumber ? (
+                        <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-warning/10 text-warning">
+                          {u.vehicleNumber}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      onClick={() => handleResetPassword(u)}
+                      disabled={resettingPasswordUserId === u.id}
+                      className="h-9 px-3 rounded-lg border border-primary/30 text-primary text-xs font-semibold hover:bg-primary/10 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      {resettingPasswordUserId === u.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <KeyRound className="w-3.5 h-3.5" />
+                      )}
+                      Reset Password
+                    </button>
+                    <button
+                      onClick={() => (isActive ? handleDeactivateUser(u) : handleReactivateUser(u))}
+                      disabled={isToggleLoading}
+                      className={`h-9 px-3 rounded-lg text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5 ${
+                        isActive
+                          ? "border border-destructive/30 text-destructive hover:bg-destructive/10"
+                          : "border border-success/30 text-success hover:bg-success/10"
+                      }`}
+                    >
+                      {isToggleLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        isActive
+                          ? <Trash2 className="w-3.5 h-3.5" />
+                          : <Plus className="w-3.5 h-3.5" />
+                      )}
+                      {isActive ? "Deactivate User" : "Reactivate User"}
+                    </button>
+                    <button
+                      onClick={() => handlePermanentDeleteUser(u)}
+                      disabled={permanentDeletingUserId === u.id}
+                      className="h-9 px-3 rounded-lg border border-destructive text-destructive text-xs font-semibold hover:bg-destructive/15 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      {permanentDeletingUserId === u.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                      )}
+                      Permanent Delete
+                    </button>
+                  </div>
+                </motion.div>
+              );
+            })
+          )}
         </div>
       ) : null}
 
