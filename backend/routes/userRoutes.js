@@ -61,4 +61,39 @@ router.post(
   userController.removeUserByEmail,
 );
 
+router.patch(
+  "/:id/reactivate",
+  [param("id").isMongoId().withMessage("Invalid user ID")],
+  validateRequest,
+  userController.reactivateUserById,
+);
+
+router.post(
+  "/:id/reactivate",
+  [param("id").isMongoId().withMessage("Invalid user ID")],
+  validateRequest,
+  userController.reactivateUserById,
+);
+
+router.post(
+  "/reactivate-by-email",
+  [body("email").trim().isEmail().withMessage("Valid email is required")],
+  validateRequest,
+  userController.reactivateUserByEmail,
+);
+
+router.post(
+  "/:id/reset-password",
+  [param("id").isMongoId().withMessage("Invalid user ID")],
+  validateRequest,
+  userController.resetUserPasswordById,
+);
+
+router.delete(
+  "/:id/permanent-delete",
+  [param("id").isMongoId().withMessage("Invalid user ID")],
+  validateRequest,
+  userController.permanentDeleteUserById,
+);
+
 module.exports = router;

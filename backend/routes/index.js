@@ -14,5 +14,6 @@ router.use("/chat", chatRoutes);
 router.use("/complaints", complaintRoutes);
 router.use("/schedules", scheduleRoutes);
 router.use("/users", userRoutes);
+router.use("/admin/users", userRoutes);
 
 module.exports = router;

@@ -2,14 +2,20 @@ const User = require("../models/User");
 const QueueEntry = require("../models/QueueEntry");
 const Ride = require("../models/Ride");
 const Trip = require("../models/Trip");
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const asyncHandler = require("../utils/asyncHandler");
 const { success } = require("../utils/response");
 const ApiError = require("../utils/ApiError");
 const { getIO } = require("../config/socket");
 const { processQueue, emitRideState } = require("../services/queueService");
+const { sendMail } = require("../services/mailService");
+const { permanentDeleteUserWithCleanup } = require("../services/userDeletionService");
 
 const ACTIVE_QUEUE_STATUSES = ["waiting", "assigned", "pickup", "in-transit"];
 const ACTIVE_RIDE_STATUSES = ["forming", "ready", "in-transit"];
+const TEMP_PASSWORD_LENGTH = 12;
+const TEMP_PASSWORD_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
 
 const toSafeUser = (user) => ({
   id: user._id.toString(),
@@ -34,6 +40,17 @@ const parsePermanentFlag = (rawValue) => {
   }
 
   return false;
+};
+
+const generateTemporaryPassword = (length = TEMP_PASSWORD_LENGTH) => {
+  const bytes = crypto.randomBytes(length);
+  let password = "";
+
+  for (let index = 0; index < length; index += 1) {
+    password += TEMP_PASSWORD_CHARSET[bytes[index] % TEMP_PASSWORD_CHARSET.length];
+  }
+
+  return password;
 };
 
 const ensureAdminCanRemoveUser = async (adminUserId, targetUser) => {
@@ -270,6 +287,30 @@ const removeUserAccount = async ({ targetUser, adminUserId, permanent }) => {
   };
 };
 
+const reactivateUserAccount = async (targetUser) => {
+  if (targetUser.isActive !== false && targetUser.status === "active") {
+    return {
+      userId: targetUser._id.toString(),
+      email: targetUser.email,
+      action: "already_active",
+      user: toSafeUser(targetUser),
+    };
+  }
+
+  targetUser.isActive = true;
+  targetUser.status = "active";
+  targetUser.deactivatedAt = null;
+  targetUser.deactivatedBy = null;
+  await targetUser.save();
+
+  return {
+    userId: targetUser._id.toString(),
+    email: targetUser.email,
+    action: "reactivated",
+    user: toSafeUser(targetUser),
+  };
+};
+
 const getUsers = asyncHandler(async (req, res) => {
   const { q = "", role } = req.query;
 
@@ -294,25 +335,62 @@ const getUsers = asyncHandler(async (req, res) => {
 
 const createUser = asyncHandler(async (req, res) => {
   const { name, email, password, role, vehicleNumber } = req.body;
+  const normalizedEmail = email.toLowerCase();
+  const loginUrl = process.env.APP_LOGIN_URL || process.env.FRONTEND_URL || "http://localhost:5173/login";
 
-  const existing = await User.findOne({ email: email.toLowerCase() });
+  const existing = await User.findOne({ email: normalizedEmail });
   if (existing) {
+    if (existing.isActive === false) {
+      throw new ApiError(409, "User is deactivated. Use Reactivate option.");
+    }
+
     throw new ApiError(409, "Email already exists");
   }
 
-  const user = await User.create({
-    name,
-    email,
-    password,
-    role,
-    status: "active",
-    isActive: true,
-    deactivatedAt: null,
-    deactivatedBy: null,
-    vehicleNumber: role === "driver" ? vehicleNumber || null : null,
-  });
+  const hashedPassword = await bcrypt.hash(password, 12);
 
-  return success(res, { user: toSafeUser(user) }, "User created", 201);
+  const [user] = await User.insertMany([
+    {
+      name,
+      email: normalizedEmail,
+      password: hashedPassword,
+      role,
+      status: "active",
+      isActive: true,
+      deactivatedAt: null,
+      deactivatedBy: null,
+      vehicleNumber: role === "driver" ? vehicleNumber || null : null,
+    },
+  ]);
+
+  const mailHtml = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
+      <h2 style="margin-bottom: 8px;">Welcome to Auto Mate</h2>
+      <p>Your account has been created by an admin.</p>
+      <p><strong>Login Email:</strong> ${normalizedEmail}</p>
+      <p><strong>Assigned Password:</strong> ${password}</p>
+      <p><strong>Login URL:</strong> <a href="${loginUrl}">${loginUrl}</a></p>
+      <p>Please change your password immediately after your first login.</p>
+    </div>
+  `;
+
+  let emailSent = true;
+  try {
+    await sendMail(
+      normalizedEmail,
+      "Your Auto Mate Account Credentials",
+      mailHtml,
+    );
+  } catch (_mailError) {
+    emailSent = false;
+  }
+
+  return success(
+    res,
+    { user: toSafeUser(user), emailSent },
+    emailSent ? "User created and email sent" : "User created, but failed to send email",
+    201,
+  );
 });
 
 const removeUserById = asyncHandler(async (req, res) => {
@@ -359,9 +437,124 @@ const removeUserByEmail = asyncHandler(async (req, res) => {
   );
 });
 
+const reactivateUserById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const targetUser = await User.findById(id);
+
+  if (!targetUser) {
+    throw new ApiError(404, "User not found");
+  }
+
+  const result = await reactivateUserAccount(targetUser);
+
+  return success(
+    res,
+    result,
+    result.action === "already_active" ? "User already active" : "User reactivated",
+  );
+});
+
+const reactivateUserByEmail = asyncHandler(async (req, res) => {
+  const email = req.body.email?.toLowerCase?.();
+  const targetUser = await User.findOne({ email });
+
+  if (!targetUser) {
+    throw new ApiError(404, "User not found");
+  }
+
+  const result = await reactivateUserAccount(targetUser);
+
+  return success(
+    res,
+    result,
+    result.action === "already_active" ? "User already active" : "User reactivated",
+  );
+});
+
+const resetUserPasswordById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const targetUser = await User.findById(id).select("_id email name");
+
+  if (!targetUser) {
+    throw new ApiError(404, "User not found");
+  }
+
+  const temporaryPassword = generateTemporaryPassword();
+  const hashedPassword = await bcrypt.hash(temporaryPassword, 12);
+  const updatePayload = {
+    password: hashedPassword,
+  };
+
+  if (User.schema.path("passwordResetRequired")) {
+    updatePayload.passwordResetRequired = true;
+  }
+
+  await User.updateOne(
+    { _id: targetUser._id },
+    { $set: updatePayload },
+  );
+
+  const loginUrl = process.env.APP_LOGIN_URL || process.env.FRONTEND_URL || "http://localhost:5173/login";
+  const mailHtml = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
+      <h2 style="margin-bottom: 8px;">Auto Mate Password Reset</h2>
+      <p>An admin reset your password.</p>
+      <p><strong>Temporary Password:</strong> ${temporaryPassword}</p>
+      <p><strong>Login URL:</strong> <a href="${loginUrl}">${loginUrl}</a></p>
+      <p>Please login and change your password immediately.</p>
+    </div>
+  `;
+
+  try {
+    await sendMail(
+      targetUser.email,
+      "Your Auto Mate Temporary Password",
+      mailHtml,
+    );
+  } catch (_mailError) {
+    throw new ApiError(500, "Failed to send reset password email");
+  }
+
+  return success(
+    res,
+    { userId: targetUser._id.toString() },
+    "Temporary password sent to user email",
+  );
+});
+
+const permanentDeleteUserById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const targetUser = await User.findById(id).select("_id email role");
+
+  if (!targetUser) {
+    throw new ApiError(404, "User not found");
+  }
+
+  await ensureAdminCanRemoveUser(req.user._id, targetUser);
+  const result = await permanentDeleteUserWithCleanup({
+    userId: targetUser._id,
+    role: targetUser.role,
+  });
+
+  // eslint-disable-next-line no-console
+  console.info(
+    `[admin:user:permanent-delete] adminId=${req.user._id.toString()} deletedUserId=${result.deletedUserId} timestamp=${result.deletedAt}`,
+  );
+
+  return success(
+    res,
+    { userId: result.deletedUserId },
+    "User permanently deleted",
+  );
+});
+
 module.exports = {
   getUsers,
   createUser,
   removeUserById,
   removeUserByEmail,
+  reactivateUserById,
+  reactivateUserByEmail,
+  resetUserPasswordById,
+  permanentDeleteUserById,
 };
