@@ -375,19 +375,25 @@ const createUser = asyncHandler(async (req, res) => {
   `;
 
   let emailSent = true;
+  let emailError = null;
   try {
     await sendMail(
       normalizedEmail,
       "Your Auto Mate Account Credentials",
       mailHtml,
     );
-  } catch (_mailError) {
+  } catch (mailError) {
     emailSent = false;
+    emailError = mailError instanceof Error ? mailError.message : "Unknown email delivery error";
+    // eslint-disable-next-line no-console
+    console.error(
+      `[admin:user:create] credentials email failed for ${normalizedEmail}: ${emailError}`,
+    );
   }
 
   return success(
     res,
-    { user: toSafeUser(user), emailSent },
+    { user: toSafeUser(user), emailSent, emailError },
     emailSent ? "User created and email sent" : "User created, but failed to send email",
     201,
   );
@@ -511,8 +517,13 @@ const resetUserPasswordById = asyncHandler(async (req, res) => {
       "Your Auto Mate Temporary Password",
       mailHtml,
     );
-  } catch (_mailError) {
-    throw new ApiError(500, "Failed to send reset password email");
+  } catch (mailError) {
+    const emailError = mailError instanceof Error ? mailError.message : "Unknown email delivery error";
+    // eslint-disable-next-line no-console
+    console.error(
+      `[admin:user:reset-password] email failed for ${targetUser.email}: ${emailError}`,
+    );
+    throw new ApiError(500, `Failed to send reset password email: ${emailError}`);
   }
 
   return success(

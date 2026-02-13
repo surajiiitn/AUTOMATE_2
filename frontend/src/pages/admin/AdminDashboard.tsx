@@ -220,7 +220,7 @@ const AdminDashboard = () => {
     setIsCreatingUser(true);
 
     try {
-      await createUserRequest({
+      const createResult = await createUserRequest({
         name: userForm.name,
         email: userForm.email,
         password: userForm.password,
@@ -228,7 +228,14 @@ const AdminDashboard = () => {
         vehicleNumber: userForm.role === "driver" ? userForm.vehicleNumber : undefined,
       });
 
-      toast.success("User created");
+      if (createResult.emailSent) {
+        toast.success("User created and credentials email sent");
+      } else {
+        const errorMessage = createResult.emailError
+          ? ` ${createResult.emailError}`
+          : "";
+        toast.error(`User created, but email was not sent.${errorMessage}`);
+      }
       setShowAddUser(false);
       setUserForm({
         name: "",

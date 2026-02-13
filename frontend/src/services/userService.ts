@@ -19,6 +19,6 @@ export const createUserRequest = async (payload: {
   role: UserRole;
   vehicleNumber?: string;
 }) => {
-  const response = await api.post<ApiResponse<{ user: User }>>("/users", payload);
-  return response.data.data.user;
+  const response = await api.post<ApiResponse<{ user: User; emailSent: boolean; emailError: string | null }>>("/users", payload);
+  return response.data.data;
 };
