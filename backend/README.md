@@ -64,6 +64,8 @@ Backend runs on `http://localhost:5000` by default.
 - `RATE_LIMIT_WINDOW_MS`: global rate-limit window
 - `RATE_LIMIT_MAX`: global rate-limit max requests
 - `AUTH_RATE_LIMIT_MAX`: auth route limit
+- `WEBAUTHN_RP_NAME`: display name shown during biometric registration
+- `WEBAUTHN_RP_ID`: optional relying-party ID override (defaults to request origin hostname)
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`: SMTP provider config (required in production for emails)
 - `SMTP_SECURE`: optional, `true`/`false` override for TLS mode (if omitted, port `465` implies secure)
 - `SMTP_CONNECTION_TIMEOUT_MS`: SMTP connect timeout in milliseconds (default `15000`)
@@ -88,6 +90,10 @@ Base URL: `/api`
 ### Auth
 - `POST /auth/signup`
 - `POST /auth/login`
+- `POST /auth/biometric/register/options` (auth required)
+- `POST /auth/biometric/register/verify` (auth required)
+- `POST /auth/biometric/login/options`
+- `POST /auth/biometric/login/verify`
 - `GET /auth/me`
 
 ### Rides / Queue

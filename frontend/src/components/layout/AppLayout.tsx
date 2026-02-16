@@ -1,6 +1,9 @@
 import { useAuth } from "@/contexts/AuthContext";
+import { extractErrorMessage } from "@/lib/api";
+import { isWebAuthnSupported } from "@/lib/webauthn";
+import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "react-router-dom";
-import { Car, LogOut, Bell, Wifi, WifiOff, Home, BookOpen, Clock, MessageSquare, Users, AlertTriangle, BarChart3, Navigation } from "lucide-react";
+import { Car, LogOut, Bell, Wifi, WifiOff, Home, Clock, MessageSquare, Users, AlertTriangle, BarChart3, Navigation, Fingerprint, Loader2 } from "lucide-react";
 import { useState, useEffect } from "react";
 
 const roleNavItems = {
@@ -24,9 +27,12 @@ const roleNavItems = {
 };
 
 const AppLayout = ({ children }: { children: React.ReactNode }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, registerBiometric } = useAuth();
   const location = useLocation();
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isEnablingBiometric, setIsEnablingBiometric] = useState(false);
+  const { toast } = useToast();
+  const canUseBiometric = isWebAuthnSupported();
 
   useEffect(() => {
     const on = () => setIsOnline(true);
@@ -38,6 +44,29 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       window.removeEventListener("offline", off);
     };
   }, []);
+
+  const handleEnableBiometric = async () => {
+    if (!canUseBiometric) {
+      return;
+    }
+
+    setIsEnablingBiometric(true);
+    try {
+      await registerBiometric();
+      toast({
+        title: "Fingerprint enabled",
+        description: "You can now use fingerprint sign-in from the login page.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Fingerprint setup failed",
+        description: extractErrorMessage(error, "Unable to enable fingerprint login"),
+      });
+    } finally {
+      setIsEnablingBiometric(false);
+    }
+  };
 
   if (!user) return null;
   const navItems = roleNavItems[user.role] || [];
@@ -84,6 +113,20 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
               <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary text-sm font-bold">
                 {user.name.charAt(0)}
               </div>
+              {canUseBiometric ? (
+                <button
+                  onClick={handleEnableBiometric}
+                  disabled={isEnablingBiometric}
+                  className="p-2 rounded-xl hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Enable fingerprint login"
+                >
+                  {isEnablingBiometric ? (
+                    <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                  ) : (
+                    <Fingerprint className="w-4 h-4 text-muted-foreground" />
+                  )}
+                </button>
+              ) : null}
               <button onClick={logout} className="p-2 rounded-xl hover:bg-muted transition-colors" title="Sign out">
                 <LogOut className="w-4 h-4 text-muted-foreground" />
               </button>

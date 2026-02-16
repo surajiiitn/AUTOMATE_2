@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth, UserRole } from "@/contexts/AuthContext";
-import { Car, Loader2, Shield, GraduationCap } from "lucide-react";
+import { isWebAuthnSupported } from "@/lib/webauthn";
+import { Car, Loader2, Shield, GraduationCap, Fingerprint } from "lucide-react";
 import { motion } from "framer-motion";
 
 const roles: { value: UserRole; label: string; icon: React.ReactNode; desc: string }[] = [
@@ -21,8 +22,9 @@ const Login = () => {
   const [role, setRole] = useState<UserRole>("student");
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const { login, isLoading, error, clearError } = useAuth();
+  const { login, loginWithBiometric, isLoading, error, clearError } = useAuth();
   const navigate = useNavigate();
+  const canUseBiometric = isWebAuthnSupported();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,6 +38,27 @@ const Login = () => {
         setLocalError(loginError.message);
       } else {
         setLocalError("Unable to login");
+      }
+    }
+  };
+
+  const handleBiometricLogin = async () => {
+    setLocalError(null);
+    clearError();
+
+    if (!email.trim()) {
+      setLocalError("Enter your email to use fingerprint login");
+      return;
+    }
+
+    try {
+      await loginWithBiometric(email, role);
+      navigate(`/${role}`);
+    } catch (loginError) {
+      if (loginError instanceof Error) {
+        setLocalError(loginError.message);
+      } else {
+        setLocalError("Unable to login with fingerprint");
       }
     }
   };
@@ -140,11 +163,28 @@ const Login = () => {
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
             Sign In
           </button>
+
+          {canUseBiometric ? (
+            <button
+              type="button"
+              onClick={handleBiometricLogin}
+              disabled={isLoading || !email.trim()}
+              className="w-full h-12 rounded-xl border border-input bg-card text-foreground text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-muted transition-colors"
+            >
+              <Fingerprint className="w-4 h-4" />
+              Sign In with Fingerprint
+            </button>
+          ) : null}
         </form>
 
-        <p className="text-center text-xs text-muted-foreground">
-          Use seeded accounts from backend `.env` to login.
-        </p>
+        <div className="text-center text-xs text-muted-foreground space-y-1">
+          <p>Use seeded accounts from backend `.env` to login.</p>
+          {canUseBiometric ? (
+            <p>
+              First-time setup: login once with password, then tap the fingerprint icon in the app header.
+            </p>
+          ) : null}
+        </div>
       </motion.div>
     </div>
   );

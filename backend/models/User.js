@@ -1,6 +1,32 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
+const BiometricCredentialSchema = new mongoose.Schema(
+  {
+    credentialId: {
+      type: String,
+      required: true,
+    },
+    publicKey: {
+      type: String,
+      required: true,
+    },
+    counter: {
+      type: Number,
+      default: 0,
+    },
+    transports: {
+      type: [String],
+      default: [],
+    },
+    lastUsedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false, timestamps: true },
+);
+
 const UserSchema = new mongoose.Schema(
   {
     name: {
@@ -51,6 +77,10 @@ const UserSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: null,
+    },
+    biometricCredentials: {
+      type: [BiometricCredentialSchema],
+      default: [],
     },
   },
   { timestamps: true },

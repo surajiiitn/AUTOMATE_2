@@ -83,6 +83,9 @@
   RATE_LIMIT_WINDOW_MS=900000
   RATE_LIMIT_MAX=300
   AUTH_RATE_LIMIT_MAX=20
+  WEBAUTHN_RP_NAME=AutoMate
+  # Optional override, defaults to origin hostname
+  # WEBAUTHN_RP_ID=localhost
   APP_LOGIN_URL=http://localhost:8080/login
   FRONTEND_URL=http://localhost:8080
 
@@ -192,6 +195,10 @@
 
   - POST /auth/signup
   - POST /auth/login
+  - POST /auth/biometric/register/options
+  - POST /auth/biometric/register/verify
+  - POST /auth/biometric/login/options
+  - POST /auth/biometric/login/verify
   - GET /auth/me
 
   ## Rides / Queue

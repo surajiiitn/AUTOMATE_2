@@ -41,6 +41,81 @@ router.post(
   authController.login,
 );
 
+router.post(
+  "/biometric/register/options",
+  authLimiter,
+  authMiddleware,
+  authController.beginBiometricRegistration,
+);
+
+router.post(
+  "/biometric/register/verify",
+  authLimiter,
+  authMiddleware,
+  [
+    body("credential.id").isString().notEmpty().withMessage("Credential ID is required"),
+    body("credential.rawId").isString().notEmpty().withMessage("Credential rawId is required"),
+    body("credential.type").equals("public-key").withMessage("Invalid credential type"),
+    body("credential.response.clientDataJSON")
+      .isString()
+      .notEmpty()
+      .withMessage("clientDataJSON is required"),
+    body("credential.response.publicKey")
+      .isString()
+      .notEmpty()
+      .withMessage("Credential public key is required"),
+    body("credential.response.transports")
+      .optional()
+      .isArray()
+      .withMessage("Credential transports must be an array"),
+  ],
+  validateRequest,
+  authController.completeBiometricRegistration,
+);
+
+router.post(
+  "/biometric/login/options",
+  authLimiter,
+  [
+    body("email").trim().isEmail().withMessage("Valid email is required"),
+    body("role")
+      .optional()
+      .isIn(["student", "driver", "admin"])
+      .withMessage("Invalid role"),
+  ],
+  validateRequest,
+  authController.beginBiometricLogin,
+);
+
+router.post(
+  "/biometric/login/verify",
+  authLimiter,
+  [
+    body("email").trim().isEmail().withMessage("Valid email is required"),
+    body("role")
+      .optional()
+      .isIn(["student", "driver", "admin"])
+      .withMessage("Invalid role"),
+    body("credential.id").isString().notEmpty().withMessage("Credential ID is required"),
+    body("credential.rawId").isString().notEmpty().withMessage("Credential rawId is required"),
+    body("credential.type").equals("public-key").withMessage("Invalid credential type"),
+    body("credential.response.clientDataJSON")
+      .isString()
+      .notEmpty()
+      .withMessage("clientDataJSON is required"),
+    body("credential.response.authenticatorData")
+      .isString()
+      .notEmpty()
+      .withMessage("authenticatorData is required"),
+    body("credential.response.signature")
+      .isString()
+      .notEmpty()
+      .withMessage("signature is required"),
+  ],
+  validateRequest,
+  authController.completeBiometricLogin,
+);
+
 router.get("/me", authMiddleware, authController.me);
 
 module.exports = router;

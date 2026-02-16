@@ -6,9 +6,17 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { loginRequest, meRequest } from "@/services/authService";
+import {
+  beginBiometricLoginRequest,
+  beginBiometricRegistrationRequest,
+  loginRequest,
+  meRequest,
+  verifyBiometricLoginRequest,
+  verifyBiometricRegistrationRequest,
+} from "@/services/authService";
 import { disconnectSocket, getSocket } from "@/lib/socket";
 import { extractErrorMessage } from "@/lib/api";
+import { createBiometricCredential, getBiometricAssertion } from "@/lib/webauthn";
 import type { User, UserRole } from "@/types/domain";
 
 export type { User, UserRole };
@@ -18,6 +26,8 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   login: (email: string, password: string, role: UserRole) => Promise<void>;
+  loginWithBiometric: (email: string, role: UserRole) => Promise<void>;
+  registerBiometric: () => Promise<void>;
   logout: () => void;
   isLoading: boolean;
   isInitializing: boolean;
@@ -50,6 +60,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const persistSession = useCallback((authToken: string, authUser: User) => {
+    setUser(authUser);
+    setToken(authToken);
+    localStorage.setItem(USER_KEY, JSON.stringify(authUser));
+    localStorage.setItem(TOKEN_KEY, authToken);
+    getSocket();
+  }, []);
 
   useEffect(() => {
     const bootstrap = async () => {
@@ -90,11 +108,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role,
       });
 
-      setUser(authUser);
-      setToken(authToken);
-      localStorage.setItem(USER_KEY, JSON.stringify(authUser));
-      localStorage.setItem(TOKEN_KEY, authToken);
-      getSocket();
+      persistSession(authToken, authUser);
     } catch (loginError) {
       const message = extractErrorMessage(loginError, "Unable to login");
       setError(message);
@@ -102,7 +116,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [persistSession]);
+
+  const loginWithBiometric = useCallback(async (email: string, role: UserRole) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const normalizedEmail = email.trim().toLowerCase();
+      const { publicKey } = await beginBiometricLoginRequest({
+        email: normalizedEmail,
+        role,
+      });
+
+      const credential = await getBiometricAssertion(publicKey);
+      const { token: authToken, user: authUser } = await verifyBiometricLoginRequest({
+        email: normalizedEmail,
+        role,
+        credential,
+      });
+
+      persistSession(authToken, authUser);
+    } catch (biometricError) {
+      const message = extractErrorMessage(biometricError, "Unable to login with fingerprint");
+      setError(message);
+      throw new Error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [persistSession]);
+
+  const registerBiometric = useCallback(async () => {
+    if (!user) {
+      throw new Error("Sign in before enabling fingerprint login");
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const { publicKey } = await beginBiometricRegistrationRequest();
+      const credential = await createBiometricCredential(publicKey);
+      await verifyBiometricRegistrationRequest({ credential });
+    } catch (biometricError) {
+      const message = extractErrorMessage(biometricError, "Unable to enable fingerprint login");
+      setError(message);
+      throw new Error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [user]);
 
   const logout = useCallback(() => {
     setUser(null);
@@ -123,13 +186,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       token,
       isAuthenticated: Boolean(user && token),
       login,
+      loginWithBiometric,
+      registerBiometric,
       logout,
       isLoading,
       isInitializing,
       error,
       clearError,
     }),
-    [user, token, login, logout, isLoading, isInitializing, error, clearError],
+    [
+      user,
+      token,
+      login,
+      loginWithBiometric,
+      registerBiometric,
+      logout,
+      isLoading,
+      isInitializing,
+      error,
+      clearError,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
