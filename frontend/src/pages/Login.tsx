@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth, UserRole } from "@/contexts/AuthContext";
 import { isWebAuthnSupported } from "@/lib/webauthn";
@@ -16,15 +16,31 @@ const roles: { value: UserRole; label: string; icon: React.ReactNode; desc: stri
   { value: "admin", label: "Admin", icon: <Shield className="w-5 h-5" />, desc: "Full access" },
 ];
 
+const BIOMETRIC_EMAIL_KEY = "automate_biometric_email";
+
+const shouldSuppressBiometricError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("notallowederror")
+    || normalized.includes("not allowed")
+    || normalized.includes("cancel")
+    || normalized.includes("aborted")
+  );
+};
+
 const Login = () => {
-  const [email, setEmail] = useState("");
+  const [rememberedBiometricEmail] = useState(() => localStorage.getItem(BIOMETRIC_EMAIL_KEY) || "");
+  const [email, setEmail] = useState(() => rememberedBiometricEmail);
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("student");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [showPasswordForm, setShowPasswordForm] = useState(() => !rememberedBiometricEmail);
+  const [hasAutoAttemptedBiometric, setHasAutoAttemptedBiometric] = useState(false);
 
   const { login, loginWithBiometric, isLoading, error, clearError } = useAuth();
   const navigate = useNavigate();
   const canUseBiometric = isWebAuthnSupported();
+  const hasQuickBiometric = canUseBiometric && Boolean(rememberedBiometricEmail);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,26 +58,44 @@ const Login = () => {
     }
   };
 
-  const handleBiometricLogin = async () => {
+  const handleBiometricLogin = useCallback(async (silent = false) => {
     setLocalError(null);
     clearError();
 
-    if (!email.trim()) {
-      setLocalError("Enter your email to use fingerprint login");
+    const targetEmail = email.trim() || rememberedBiometricEmail.trim();
+
+    if (!targetEmail) {
+      if (!silent) {
+        setLocalError("Enter your email to use fingerprint login");
+      }
       return;
     }
 
     try {
-      await loginWithBiometric(email, role);
-      navigate(`/${role}`);
+      await loginWithBiometric(targetEmail);
+      navigate("/", { replace: true });
     } catch (loginError) {
+      const message = loginError instanceof Error ? loginError.message : "Unable to login with fingerprint";
+      if (silent && shouldSuppressBiometricError(message)) {
+        return;
+      }
+
       if (loginError instanceof Error) {
         setLocalError(loginError.message);
       } else {
         setLocalError("Unable to login with fingerprint");
       }
     }
-  };
+  }, [clearError, email, loginWithBiometric, navigate, rememberedBiometricEmail]);
+
+  useEffect(() => {
+    if (!hasQuickBiometric || hasAutoAttemptedBiometric) {
+      return;
+    }
+
+    setHasAutoAttemptedBiometric(true);
+    void handleBiometricLogin(true);
+  }, [handleBiometricLogin, hasAutoAttemptedBiometric, hasQuickBiometric]);
 
   const shownError = localError || error;
 
@@ -95,87 +129,131 @@ const Login = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          {roles.map((r) => (
+        {hasQuickBiometric ? (
+          <div className="space-y-3">
             <button
-              key={r.value}
+              type="button"
               onClick={() => {
-                setRole(r.value);
-                setLocalError(null);
-                clearError();
+                void handleBiometricLogin();
               }}
-              className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all duration-200 ${
-                role === r.value
-                  ? "border-primary bg-primary/5 text-primary shadow-sm"
-                  : "border-transparent bg-card text-muted-foreground hover:bg-muted"
-              }`}
+              disabled={isLoading}
+              className="w-full h-12 rounded-xl btn-primary text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {r.icon}
-              <span className="text-xs font-semibold">{r.label}</span>
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Fingerprint className="w-4 h-4" />}
+              Continue with Fingerprint
             </button>
-          ))}
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                setLocalError(null);
-                clearError();
-              }}
-              placeholder="you@university.edu"
-              className="w-full h-12 px-4 rounded-xl bg-card border border-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-sm transition-all"
-              required
-            />
+            <p className="text-xs text-center text-muted-foreground">
+              Saved account: <span className="font-medium text-foreground">{rememberedBiometricEmail}</span>
+            </p>
+            {!showPasswordForm ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasswordForm(true);
+                  setLocalError(null);
+                  clearError();
+                }}
+                className="w-full h-10 rounded-xl border border-input bg-card text-foreground text-sm hover:bg-muted transition-colors"
+              >
+                Use password instead
+              </button>
+            ) : null}
           </div>
+        ) : null}
 
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setLocalError(null);
-                clearError();
-              }}
-              placeholder="••••••••"
-              className="w-full h-12 px-4 rounded-xl bg-card border border-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-sm transition-all"
-              required
-            />
-          </div>
+        {(!hasQuickBiometric || showPasswordForm) ? (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              {roles.map((r) => (
+                <button
+                  key={r.value}
+                  onClick={() => {
+                    setRole(r.value);
+                    setLocalError(null);
+                    clearError();
+                  }}
+                  className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all duration-200 ${
+                    role === r.value
+                      ? "border-primary bg-primary/5 text-primary shadow-sm"
+                      : "border-transparent bg-card text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {r.icon}
+                  <span className="text-xs font-semibold">{r.label}</span>
+                </button>
+              ))}
+            </div>
 
-          {shownError ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-foreground">Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setLocalError(null);
+                    clearError();
+                  }}
+                  placeholder="you@university.edu"
+                  className="w-full h-12 px-4 rounded-xl bg-card border border-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-sm transition-all"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-foreground">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setLocalError(null);
+                    clearError();
+                  }}
+                  placeholder="••••••••"
+                  className="w-full h-12 px-4 rounded-xl bg-card border border-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-sm transition-all"
+                  required
+                />
+              </div>
+
+              {shownError ? (
+                <div className="text-xs rounded-lg border border-destructive/30 bg-destructive/10 text-destructive px-3 py-2">
+                  {shownError}
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full h-12 rounded-xl btn-primary text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Sign In
+              </button>
+
+              {canUseBiometric ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleBiometricLogin();
+                  }}
+                  disabled={isLoading}
+                  className="w-full h-12 rounded-xl border border-input bg-card text-foreground text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-muted transition-colors"
+                >
+                  <Fingerprint className="w-4 h-4" />
+                  Sign In with Fingerprint
+                </button>
+              ) : null}
+            </form>
+          </>
+        ) : (
+          shownError ? (
             <div className="text-xs rounded-lg border border-destructive/30 bg-destructive/10 text-destructive px-3 py-2">
               {shownError}
             </div>
-          ) : null}
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full h-12 rounded-xl btn-primary text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-            Sign In
-          </button>
-
-          {canUseBiometric ? (
-            <button
-              type="button"
-              onClick={handleBiometricLogin}
-              disabled={isLoading || !email.trim()}
-              className="w-full h-12 rounded-xl border border-input bg-card text-foreground text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-muted transition-colors"
-            >
-              <Fingerprint className="w-4 h-4" />
-              Sign In with Fingerprint
-            </button>
-          ) : null}
-        </form>
+          ) : null
+        )}
 
         <div className="text-center text-xs text-muted-foreground space-y-1">
           <p>Use seeded accounts from backend `.env` to login.</p>

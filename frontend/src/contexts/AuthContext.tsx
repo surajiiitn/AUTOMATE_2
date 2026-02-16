@@ -26,7 +26,7 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   login: (email: string, password: string, role: UserRole) => Promise<void>;
-  loginWithBiometric: (email: string, role: UserRole) => Promise<void>;
+  loginWithBiometric: (email: string) => Promise<void>;
   registerBiometric: () => Promise<void>;
   logout: () => void;
   isLoading: boolean;
@@ -39,6 +39,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const USER_KEY = "automate_user";
 const TOKEN_KEY = "automate_token";
+const BIOMETRIC_EMAIL_KEY = "automate_biometric_email";
 
 const getStoredUser = (): User | null => {
   const rawUser = localStorage.getItem(USER_KEY);
@@ -118,7 +119,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [persistSession]);
 
-  const loginWithBiometric = useCallback(async (email: string, role: UserRole) => {
+  const loginWithBiometric = useCallback(async (email: string) => {
     setIsLoading(true);
     setError(null);
 
@@ -126,17 +127,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const normalizedEmail = email.trim().toLowerCase();
       const { publicKey } = await beginBiometricLoginRequest({
         email: normalizedEmail,
-        role,
       });
 
       const credential = await getBiometricAssertion(publicKey);
       const { token: authToken, user: authUser } = await verifyBiometricLoginRequest({
         email: normalizedEmail,
-        role,
         credential,
       });
 
       persistSession(authToken, authUser);
+      localStorage.setItem(BIOMETRIC_EMAIL_KEY, normalizedEmail);
     } catch (biometricError) {
       const message = extractErrorMessage(biometricError, "Unable to login with fingerprint");
       setError(message);
@@ -158,6 +158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { publicKey } = await beginBiometricRegistrationRequest();
       const credential = await createBiometricCredential(publicKey);
       await verifyBiometricRegistrationRequest({ credential });
+      localStorage.setItem(BIOMETRIC_EMAIL_KEY, user.email.toLowerCase());
     } catch (biometricError) {
       const message = extractErrorMessage(biometricError, "Unable to enable fingerprint login");
       setError(message);
