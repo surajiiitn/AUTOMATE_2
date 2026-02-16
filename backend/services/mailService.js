@@ -1,6 +1,6 @@
 const { Resend } = require("resend");
 
-const MAIL_FROM = "Auto Mate <onboarding@resend.dev>";
+const MAIL_FROM = "Automate <noreply@automateiiitn.me>";
 
 let resendClient = null;
 
@@ -68,7 +68,7 @@ const sendMail = async (to, subject, html) => {
 
     // eslint-disable-next-line no-console
     console.log(
-      `[mail][resend] Email sent successfully to=${to} messageId=${messageId || "n/a"}`,
+      `[mail][resend] Email sent successfully from=${MAIL_FROM} to=${to} messageId=${messageId || "n/a"}`,
     );
 
     return {
