@@ -19,7 +19,7 @@
 
   ## Project Structure
 
-  ```txt
+ 
   AUTOMATE/
     backend/
       app.js
